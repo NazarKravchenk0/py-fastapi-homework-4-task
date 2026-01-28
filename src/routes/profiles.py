@@ -1,62 +1,23 @@
 from __future__ import annotations
 
-import re
-from datetime import date, datetime
-
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import ValidationError
 
 from src.database.session import get_db
 from src.exceptions.storage import S3FileUploadError
 from src.models.profiles import ProfileModel
 from src.models.users import UserModel
-from src.schemas.profiles import ProfileResponse
+from src.schemas.profiles import ProfileCreateSchema, ProfileResponseSchema
 from src.security.auth import get_current_user
 from src.storages.s3 import S3Storage
 
 router = APIRouter(prefix="/api/v1/profiles", tags=["profiles"])
 
-_ALLOWED_GENDERS = {"man", "woman"}
-_ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/jpg", "image/png"}
-_MAX_AVATAR_SIZE = 1 * 1024 * 1024  # 1MB
-
 
 def _is_admin(user: UserModel) -> bool:
     return getattr(user, "group_id", None) == 3
-
-
-def _validate_name(value: str) -> None:
-    if not re.fullmatch(r"[A-Za-z]+", value or ""):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"{value} contains non-english letters",
-        )
-
-
-def _validate_info(info: str) -> None:
-    if info is None or not info.strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Info field cannot be empty",
-        )
-
-
-def _validate_birth_date(birth: date) -> None:
-    if birth.year <= 1900:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Invalid birth date - year must be greater than 1900.",
-        )
-
-    today = date.today()
-    age = today.year - birth.year - ((today.month, today.day) < (birth.month, birth.day))
-    if age < 18:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="You must be at least 18 years old to register.",
-        )
 
 
 async def get_s3_storage() -> S3Storage:
@@ -66,7 +27,7 @@ async def get_s3_storage() -> S3Storage:
 @router.post(
     "/users/{user_id}/profile/",
     status_code=status.HTTP_201_CREATED,
-    response_model=ProfileResponse,
+    response_model=ProfileResponseSchema,
 )
 async def create_profile(
     user_id: int,
@@ -79,96 +40,74 @@ async def create_profile(
     db: AsyncSession = Depends(get_db),
     current_user: UserModel = Depends(get_current_user),
     storage: S3Storage = Depends(get_s3_storage),
-) -> ProfileResponse:
+) -> ProfileResponseSchema:
+    # ✅ required: user from path must exist and be active
+    stmt_user = select(UserModel).where(UserModel.id == user_id)
+    target_user = (await db.execute(stmt_user)).scalars().first()
+    if not target_user or not target_user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or not active.",
+        )
+
+    # permissions (exact message required)
     if current_user.id != user_id and not _is_admin(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not allowed to create this profile",
+            detail="You don't have permission to edit this profile.",
         )
 
+    # cannot create twice
     stmt_existing = select(ProfileModel).where(ProfileModel.user_id == user_id)
-    res_existing = await db.execute(stmt_existing)
-    if res_existing.scalars().first():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Profile already exists",
-        )
+    existing = (await db.execute(stmt_existing)).scalars().first()
+    if existing:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Profile already exists")
 
-    _validate_name(first_name)
-    _validate_name(last_name)
+    avatar_bytes = await avatar.read()
 
-    if gender not in _ALLOWED_GENDERS:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Gender must be one of: {', '.join(sorted(_ALLOWED_GENDERS))}",
-        )
-
+    # ✅ validation via schema (task requirement)
     try:
-        birth = datetime.strptime(date_of_birth, "%Y-%m-%d").date()
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Invalid date format. Expected YYYY-MM-DD",
-        )
-
-    _validate_birth_date(birth)
-    _validate_info(info)
-
-    if avatar.content_type not in _ALLOWED_IMAGE_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Invalid image format",
-        )
-
-    content = await avatar.read()
-    if len(content) > _MAX_AVATAR_SIZE:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Image size exceeds the allowed limit (1MB).",
-        )
-
-    avatar_key = f"avatars/{user_id}_avatar.jpg"
-
-    try:
-        avatar_url = await storage.upload_file(
-            key=avatar_key,
-            content=content,
-            content_type=avatar.content_type,
-        )
-
-        profile = ProfileModel(
+        payload = ProfileCreateSchema(
             user_id=user_id,
             first_name=first_name,
             last_name=last_name,
             gender=gender,
-            date_of_birth=birth,
+            date_of_birth=date_of_birth,
             info=info,
-            avatar_url=avatar_url,
+            avatar=avatar_bytes,
+            avatar_content_type=avatar.content_type,
         )
-
-        db.add(profile)
-        await db.commit()
-        await db.refresh(profile)
-
-        return ProfileResponse(
-            id=profile.id,
-            user_id=profile.user_id,
-            first_name=profile.first_name,
-            last_name=profile.last_name,
-            gender=profile.gender,
-            date_of_birth=profile.date_of_birth,
-            info=profile.info,
-            avatar_url=profile.avatar_url,
-        )
-
-    except S3FileUploadError as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e),
-        )
-
     except ValidationError:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Invalid profile data.",
         )
+
+    try:
+        avatar_key = f"avatars/{user_id}_avatar.jpg"
+        avatar_url = await storage.upload_file(
+            key=avatar_key,
+            content=payload.avatar,
+            content_type=payload.avatar_content_type,
+        )
+    except S3FileUploadError:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to upload avatar. Please try again later.",
+        )
+
+    profile = ProfileModel(
+        user_id=user_id,
+        first_name=payload.first_name,
+        last_name=payload.last_name,
+        gender=payload.gender,
+        date_of_birth=payload.birth_date,  # см. ниже: поле в схеме
+        info=payload.info,
+        avatar_url=avatar_url,
+    )
+
+    db.add(profile)
+    await db.commit()
+    await db.refresh(profile)
+
+    return ProfileResponseSchema.model_validate(profile)

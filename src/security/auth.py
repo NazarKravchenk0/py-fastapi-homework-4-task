@@ -11,39 +11,28 @@ from security.http import get_token
 async def get_current_user(
     request: Request,
     db: AsyncSession = Depends(get_db),
-):
+) -> UserModel:
     token = get_token(request)
     jwt_manager = get_jwt_auth_manager()
 
     try:
         payload = jwt_manager.decode_access_token(token)
     except ExpiredSignatureError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired.",
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has expired.")
     except JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token.",
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token.")
 
     user_id = payload.get("sub") or payload.get("user_id") or payload.get("id")
-
     if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token payload.",
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload.")
 
     stmt = select(UserModel).where(UserModel.id == int(user_id))
-    res = await db.execute(stmt)
-    user = res.scalars().first()
+    user = (await db.execute(stmt)).scalars().first()
 
     if not user or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token.",
+            detail="User not found or not active.",
         )
 
     return user
