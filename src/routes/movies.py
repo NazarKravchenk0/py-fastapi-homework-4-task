@@ -113,10 +113,12 @@ async def create_movie(
         actors.append(actor)
 
     languages = []
-    for l in movie.languages:
-        language = await db.scalar(select(LanguageModel).where(LanguageModel.name == l))
+    for lang_name in movie.languages:
+        language = await db.scalar(
+            select(LanguageModel).where(LanguageModel.name == lang_name)
+        )
         if not language:
-            language = LanguageModel(name=l)
+            language = LanguageModel(name=lang_name)
             db.add(language)
             await db.flush()
         languages.append(language)
