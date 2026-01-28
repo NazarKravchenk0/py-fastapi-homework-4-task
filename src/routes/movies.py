@@ -110,7 +110,6 @@ def _to_detail(movie: MovieModel) -> MovieDetailSchema:
     )
 
 
-
 @router.get("/", response_model=MovieListResponseSchema)
 async def get_movies(
     page: int = Query(1, ge=1),
