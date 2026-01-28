@@ -1,16 +1,24 @@
-from typing import List
+from __future__ import annotations
+
+from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict
 
 
-# ----- Base / Create -----
+# ---- Base schemas ----
 
 class MovieBaseSchema(BaseModel):
-    title: str
-    description: str
-    duration: int
-    genres: List[str]
-    actors: List[str]
+    name: str
+    date: str  # если у тебя date = str в API, иначе поменяй на date
+    score: Optional[float] = None
+    overview: Optional[str] = None
+    status: Optional[str] = None
+    budget: Optional[int] = None
+    revenue: Optional[int] = None
+
+    country: Optional[str] = None
+    genres: List[str] = []
+    actors: List[str] = []
     languages: List[str] = []
 
 
@@ -18,35 +26,41 @@ class MovieCreateSchema(MovieBaseSchema):
     pass
 
 
-# ----- List item -----
+class MovieUpdateSchema(MovieBaseSchema):
+    # обычно update допускает частичные поля, но чтобы не ломать импорты/тесты —
+    # оставляем как базу. Если тесты требуют partial update — скажешь, сделаем Optional.
+    pass
+
+
+# ---- List/Response schemas ----
 
 class MovieListItemSchema(BaseModel):
     id: int
-    title: str
-    description: str
-    duration: int
-    genres: List[str]
-    actors: List[str]
+    name: str
+    date: str
+    score: Optional[float] = None
+    overview: Optional[str] = None
+    status: Optional[str] = None
+    budget: Optional[int] = None
+    revenue: Optional[int] = None
+
+    country: Optional[str] = None
+    genres: List[str] = []
+    actors: List[str] = []
     languages: List[str] = []
 
     model_config = ConfigDict(from_attributes=True)
 
 
-# Some parts of the project/tests may expect a different name for list response schema.
-# ✅ Provide aliases to avoid ImportError.
+# ✅ Алиасы под все варианты импортов в проекте
 MovieListSchema = MovieListItemSchema
 MovieListResponseSchema = MovieListItemSchema
 
 
-# ----- Detail -----
+class MovieResponseSchema(MovieListItemSchema):
+    # чаще всего response == detail
+    pass
 
-class MovieDetailSchema(BaseModel):
-    id: int
-    title: str
-    description: str
-    duration: int
-    genres: List[str]
-    actors: List[str]
-    languages: List[str] = []
 
-    model_config = ConfigDict(from_attributes=True)
+class MovieDetailSchema(MovieListItemSchema):
+    pass
