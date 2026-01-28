@@ -1,66 +1,104 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from datetime import date
+from typing import Optional, List
 
-from pydantic import BaseModel, ConfigDict
-
-
-# ---- Base schemas ----
-
-class MovieBaseSchema(BaseModel):
-    name: str
-    date: str  # если у тебя date = str в API, иначе поменяй на date
-    score: Optional[float] = None
-    overview: Optional[str] = None
-    status: Optional[str] = None
-    budget: Optional[int] = None
-    revenue: Optional[int] = None
-
-    country: Optional[str] = None
-    genres: List[str] = []
-    actors: List[str] = []
-    languages: List[str] = []
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class MovieCreateSchema(MovieBaseSchema):
-    pass
-
-
-class MovieUpdateSchema(MovieBaseSchema):
-    # обычно update допускает частичные поля, но чтобы не ломать импорты/тесты —
-    # оставляем как базу. Если тесты требуют partial update — скажешь, сделаем Optional.
-    pass
-
-
-# ---- List/Response schemas ----
-
-class MovieListItemSchema(BaseModel):
-    id: int
-    name: str
-    date: str
-    score: Optional[float] = None
-    overview: Optional[str] = None
-    status: Optional[str] = None
-    budget: Optional[int] = None
-    revenue: Optional[int] = None
-
-    country: Optional[str] = None
-    genres: List[str] = []
-    actors: List[str] = []
-    languages: List[str] = []
-
+class CountrySchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-
-# ✅ Алиасы под все варианты импортов в проекте
-MovieListSchema = MovieListItemSchema
-MovieListResponseSchema = MovieListItemSchema
+    code: str
+    name: Optional[str] = None
 
 
-class MovieResponseSchema(MovieListItemSchema):
-    # чаще всего response == detail
-    pass
+class GenreSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
 
 
-class MovieDetailSchema(MovieListItemSchema):
-    pass
+class ActorSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+
+
+class LanguageSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+
+
+class MovieListItemSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    date: date
+    score: float
+    overview: str
+
+
+class MovieListResponseSchema(BaseModel):
+    movies: List[MovieListItemSchema]
+    total_pages: int
+    total_items: int
+    prev_page: Optional[str] = None
+    next_page: Optional[str] = None
+
+
+class MovieDetailSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    date: date
+    score: float
+    overview: str
+    status: str
+    budget: float
+    revenue: float
+
+    country: CountrySchema
+    genres: List[GenreSchema]
+    actors: List[ActorSchema]
+    languages: List[LanguageSchema]
+
+
+class MovieCreateSchema(BaseModel):
+    name: str
+    date: date
+    score: float
+    overview: str
+    status: str
+    budget: float
+    revenue: float
+
+    country: str = Field(..., description="Country code, e.g. 'US'")
+    genres: List[str]
+    actors: List[str]
+    languages: List[str]
+
+
+class MovieUpdateSchema(BaseModel):
+    name: Optional[str] = None
+    date: Optional[date] = None
+    score: Optional[float] = None
+    overview: Optional[str] = None
+    status: Optional[str] = None
+    budget: Optional[float] = None
+    revenue: Optional[float] = None
+
+    country: Optional[str] = None
+    genres: Optional[List[str]] = None
+    actors: Optional[List[str]] = None
+    languages: Optional[List[str]] = None
+
+
+class MovieUpdateResponseSchema(BaseModel):
+    detail: str
