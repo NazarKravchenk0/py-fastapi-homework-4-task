@@ -1,37 +1,51 @@
+"""
+Schemas package.
+
+IMPORTANT:
+This module is executed whenever any submodule like `schemas.movies` is imported.
+So it must NOT import names that don't exist, otherwise you'll get ImportError
+even if you import `schemas.movies` directly.
+"""
+
+# Accounts
 from .accounts import (
-    UserRegistrationSchema,
-    UserLoginSchema,
-    PasswordResetRequestSchema,
-    PasswordResetCompleteRequestSchema,
-    UserActivationRequestSchema,
     MessageResponseSchema,
+    PasswordResetCompleteRequestSchema,
+    PasswordResetRequestSchema,
+    TokenResponseSchema,
+    UserActivationRequestSchema,
+    UserLoginRequestSchema,
+    UserRegisterRequestSchema,
 )
-from .profiles import (
-    ProfileCreateSchema,
-    ProfileResponseSchema,
-)
+
+# Profiles
+from .profiles import ProfileCreateSchema, ProfileResponseSchema
+
+# Movies
 from .movies import (
     MovieCreateSchema,
-    MovieUpdateSchema,
-    MovieUpdateResponseSchema,
+    MovieDetailSchema,
     MovieListItemSchema,
     MovieListResponseSchema,
-    MovieDetailSchema,
+    MovieUpdateSchema,
 )
 
 __all__ = [
-    "UserRegistrationSchema",
-    "UserLoginSchema",
-    "PasswordResetRequestSchema",
-    "PasswordResetCompleteRequestSchema",
-    "UserActivationRequestSchema",
+    # Accounts
     "MessageResponseSchema",
+    "PasswordResetCompleteRequestSchema",
+    "PasswordResetRequestSchema",
+    "TokenResponseSchema",
+    "UserActivationRequestSchema",
+    "UserLoginRequestSchema",
+    "UserRegisterRequestSchema",
+    # Profiles
     "ProfileCreateSchema",
     "ProfileResponseSchema",
+    # Movies
     "MovieCreateSchema",
-    "MovieUpdateSchema",
-    "MovieUpdateResponseSchema",
+    "MovieDetailSchema",
     "MovieListItemSchema",
     "MovieListResponseSchema",
-    "MovieDetailSchema",
+    "MovieUpdateSchema",
 ]

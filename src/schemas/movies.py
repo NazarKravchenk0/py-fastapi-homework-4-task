@@ -1,37 +1,21 @@
+"""
+Pydantic schemas for Movies API.
+
+The integration tests import these names from `schemas.movies`:
+
+- MovieListItemSchema
+- MovieListResponseSchema
+- MovieDetailSchema
+- MovieCreateSchema
+- MovieUpdateSchema
+"""
+
 from __future__ import annotations
 
-from datetime import date
-from typing import Optional, List
+from datetime import date as dt_date
+from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
-
-
-class CountrySchema(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    code: str
-    name: Optional[str] = None
-
-
-class GenreSchema(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    name: str
-
-
-class ActorSchema(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    name: str
-
-
-class LanguageSchema(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    name: str
 
 
 class MovieListItemSchema(BaseModel):
@@ -39,17 +23,21 @@ class MovieListItemSchema(BaseModel):
 
     id: int
     name: str
-    date: date
+    date: dt_date
     score: float
     overview: str
+    status: str
+    budget: float
+    revenue: float
+    country: str
 
 
 class MovieListResponseSchema(BaseModel):
-    movies: List[MovieListItemSchema]
-    total_pages: int
     total_items: int
+    total_pages: int
     prev_page: Optional[str] = None
     next_page: Optional[str] = None
+    movies: List[MovieListItemSchema]
 
 
 class MovieDetailSchema(BaseModel):
@@ -57,48 +45,42 @@ class MovieDetailSchema(BaseModel):
 
     id: int
     name: str
-    date: date
+    date: dt_date
     score: float
     overview: str
     status: str
     budget: float
     revenue: float
-
-    country: CountrySchema
-    genres: List[GenreSchema]
-    actors: List[ActorSchema]
-    languages: List[LanguageSchema]
+    country: str
+    genres: List[str]
+    actors: List[str]
+    languages: List[str]
 
 
 class MovieCreateSchema(BaseModel):
-    name: str
-    date: date
+    name: str = Field(..., min_length=1)
+    date: dt_date
     score: float
     overview: str
     status: str
     budget: float
     revenue: float
-
-    country: str = Field(..., description="Country code, e.g. 'US'")
+    country: str = Field(..., min_length=1)
     genres: List[str]
     actors: List[str]
     languages: List[str]
 
 
 class MovieUpdateSchema(BaseModel):
-    name: Optional[str] = None
-    date: Optional[date] = None
+    # PATCH: all fields optional
+    name: Optional[str] = Field(default=None, min_length=1)
+    date: Optional[dt_date] = None
     score: Optional[float] = None
     overview: Optional[str] = None
     status: Optional[str] = None
     budget: Optional[float] = None
     revenue: Optional[float] = None
-
-    country: Optional[str] = None
+    country: Optional[str] = Field(default=None, min_length=1)
     genres: Optional[List[str]] = None
     actors: Optional[List[str]] = None
     languages: Optional[List[str]] = None
-
-
-class MovieUpdateResponseSchema(BaseModel):
-    detail: str
