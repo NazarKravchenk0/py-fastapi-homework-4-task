@@ -6,6 +6,7 @@ from datetime import date, datetime
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import ValidationError
 
 from src.database.session import get_db
 from src.exceptions.storage import S3FileUploadError
@@ -23,13 +24,10 @@ _MAX_AVATAR_SIZE = 1 * 1024 * 1024  # 1MB
 
 
 def _is_admin(user: UserModel) -> bool:
-    # ВАЖНО: никакой user.group (это и вызывало MissingGreenlet)
-    # В тестах: group_id=3 это admin
     return getattr(user, "group_id", None) == 3
 
 
 def _validate_name(value: str) -> None:
-    # только английские буквы
     if not re.fullmatch(r"[A-Za-z]+", value or ""):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -75,21 +73,19 @@ async def create_profile(
     first_name: str = Form(...),
     last_name: str = Form(...),
     gender: str = Form(...),
-    date_of_birth: str = Form(...),  # придёт строкой "YYYY-MM-DD"
+    date_of_birth: str = Form(...),
     info: str = Form(...),
     avatar: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     current_user: UserModel = Depends(get_current_user),
     storage: S3Storage = Depends(get_s3_storage),
 ) -> ProfileResponse:
-    # права
     if current_user.id != user_id and not _is_admin(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You are not allowed to create this profile",
         )
 
-    # нельзя создать второй раз
     stmt_existing = select(ProfileModel).where(ProfileModel.user_id == user_id)
     res_existing = await db.execute(stmt_existing)
     if res_existing.scalars().first():
@@ -98,7 +94,6 @@ async def create_profile(
             detail="Profile already exists",
         )
 
-    # валидации
     _validate_name(first_name)
     _validate_name(last_name)
 
@@ -140,33 +135,40 @@ async def create_profile(
             content=content,
             content_type=avatar.content_type,
         )
+
+        profile = ProfileModel(
+            user_id=user_id,
+            first_name=first_name,
+            last_name=last_name,
+            gender=gender,
+            date_of_birth=birth,
+            info=info,
+            avatar_url=avatar_url,
+        )
+
+        db.add(profile)
+        await db.commit()
+        await db.refresh(profile)
+
+        return ProfileResponse(
+            id=profile.id,
+            user_id=profile.user_id,
+            first_name=profile.first_name,
+            last_name=profile.last_name,
+            gender=profile.gender,
+            date_of_birth=profile.date_of_birth,
+            info=profile.info,
+            avatar_url=profile.avatar_url,
+        )
+
     except S3FileUploadError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e),
         )
 
-    profile = ProfileModel(
-        user_id=user_id,
-        first_name=first_name,
-        last_name=last_name,
-        gender=gender,
-        date_of_birth=birth,
-        info=info,
-        avatar_url=avatar_url,
-    )
-
-    db.add(profile)
-    await db.commit()
-    await db.refresh(profile)
-
-    return ProfileResponse(
-        id=profile.id,
-        user_id=profile.user_id,
-        first_name=profile.first_name,
-        last_name=profile.last_name,
-        gender=profile.gender,
-        date_of_birth=profile.date_of_birth,
-        info=profile.info,
-        avatar_url=profile.avatar_url,
-    )
+    except ValidationError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid profile data.",
+        )

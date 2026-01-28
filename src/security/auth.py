@@ -1,64 +1,49 @@
-from __future__ import annotations
-
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from jose import JWTError, ExpiredSignatureError
 
-from src.database.session import get_db
-from src.models.users import UserModel
-from src.security.token_manager import JWTAuthManager
-
-
-def get_jwt_manager() -> JWTAuthManager:
-    return JWTAuthManager()
+from config import get_jwt_auth_manager
+from database import UserModel, get_db
+from security.http import get_token
 
 
 async def get_current_user(
     request: Request,
     db: AsyncSession = Depends(get_db),
-    jwt_manager: JWTAuthManager = Depends(get_jwt_manager),
-) -> UserModel:
-    auth_header = request.headers.get("Authorization")
+):
+    token = get_token(request)
+    jwt_manager = get_jwt_auth_manager()
 
-    if not auth_header:
+    try:
+        payload = jwt_manager.decode_access_token(token)
+    except ExpiredSignatureError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authorization header is missing",
+            detail="Token has expired.",
         )
-
-    # ожидаем: "Bearer <token>"
-    parts = auth_header.split()
-    if len(parts) != 2 or parts[0] != "Bearer" or not parts[1]:
+    except JWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid Authorization header format. Expected 'Bearer <token>'",
+            detail="Invalid token.",
         )
 
-    token = parts[1]
-
-    payload = jwt_manager.decode_access_token(token)  # должно вернуть dict
-    user_id = payload.get("user_id")
+    user_id = payload.get("sub") or payload.get("user_id") or payload.get("id")
 
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
+            detail="Invalid token payload.",
         )
 
     stmt = select(UserModel).where(UserModel.id == int(user_id))
     res = await db.execute(stmt)
     user = res.scalars().first()
 
-    if not user:
+    if not user or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
-        )
-
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User is inactive",
+            detail="Invalid token.",
         )
 
     return user
