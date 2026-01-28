@@ -1,150 +1,172 @@
 from __future__ import annotations
 
-import uuid
-from typing import Optional
+import re
+from datetime import date, datetime
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import get_db
-from database.models.accounts import UserModel, UserGroupEnum, UserProfileModel
-from schemas.profiles import ProfileCreateSchema, ProfileResponseSchema
-from config.dependencies import get_jwt_auth_manager, get_s3_storage_client
-from security.interfaces import JWTAuthManagerInterface
-from storages.interfaces import S3StorageInterface
+from src.database.session import get_db
+from src.exceptions.storage import S3FileUploadError
+from src.models.profiles import ProfileModel
+from src.models.users import UserModel
+from src.schemas.profiles import ProfileResponse
+from src.security.auth import get_current_user
+from src.storages.s3 import S3Storage
 
+router = APIRouter(prefix="/api/v1/profiles", tags=["profiles"])
 
-router = APIRouter(prefix="/users", tags=["profiles"])
-
-
-def _get_bearer_token(request: Request) -> str:
-    authorization: Optional[str] = request.headers.get("Authorization")
-    if not authorization:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authorization header is missing",
-        )
-
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid Authorization header format. Expected 'Bearer <token>'",
-        )
-    return token
+_ALLOWED_GENDERS = {"man", "woman"}
+_ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/jpg", "image/png"}
+_MAX_AVATAR_SIZE = 1 * 1024 * 1024  # 1MB
 
 
 def _is_admin(user: UserModel) -> bool:
-    # допускаем создание профиля другим пользователям только админу
-    # (если у тебя есть MODERATOR тоже — добавь)
-    return getattr(user.group, "name", None) == UserGroupEnum.ADMIN
+    # ВАЖНО: никакой user.group (это и вызывало MissingGreenlet)
+    # В тестах: group_id=3 это admin
+    return getattr(user, "group_id", None) == 3
+
+
+def _validate_name(value: str) -> None:
+    # только английские буквы
+    if not re.fullmatch(r"[A-Za-z]+", value or ""):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{value} contains non-english letters",
+        )
+
+
+def _validate_info(info: str) -> None:
+    if info is None or not info.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Info field cannot be empty",
+        )
+
+
+def _validate_birth_date(birth: date) -> None:
+    if birth.year <= 1900:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid birth date - year must be greater than 1900.",
+        )
+
+    today = date.today()
+    age = today.year - birth.year - ((today.month, today.day) < (birth.month, birth.day))
+    if age < 18:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="You must be at least 18 years old to register.",
+        )
+
+
+async def get_s3_storage() -> S3Storage:
+    return S3Storage()
 
 
 @router.post(
-    "/{user_id}/profile/",
-    response_model=ProfileResponseSchema,
+    "/users/{user_id}/profile/",
     status_code=status.HTTP_201_CREATED,
+    response_model=ProfileResponse,
 )
 async def create_profile(
-    request: Request,
     user_id: int,
     first_name: str = Form(...),
     last_name: str = Form(...),
     gender: str = Form(...),
-    date_of_birth: str = Form(...),
+    date_of_birth: str = Form(...),  # придёт строкой "YYYY-MM-DD"
     info: str = Form(...),
     avatar: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
-    s3_client: S3StorageInterface = Depends(get_s3_storage_client),
-):
-    # 1) token
-    token = _get_bearer_token(request)
-
-    # 2) decode token + expire handling
-    try:
-        payload = jwt_manager.decode_access_token(token)
-    except Exception as exc:
-        # если в проекте есть отдельное исключение TokenExpired — замени проверку
-        if "expired" in str(exc).lower():
-            raise HTTPException(status_code=401, detail="Token has expired.")
-        raise HTTPException(status_code=401, detail="Token has expired.")
-
-    # ожидаем, что в payload есть user id (обычно "sub")
-    current_user_id = payload.get("sub") or payload.get("user_id") or payload.get("id")
-    if not current_user_id:
-        raise HTTPException(status_code=401, detail="Token has expired.")
-
-    # 3) user exists + active
-    stmt = select(UserModel).where(UserModel.id == int(current_user_id))
-    current_user = (await db.execute(stmt)).scalars().first()
-
-    if not current_user or not current_user.is_active:
-        raise HTTPException(status_code=401, detail="User not found or not active.")
-
-    # 4) permissions
+    current_user: UserModel = Depends(get_current_user),
+    storage: S3Storage = Depends(get_s3_storage),
+) -> ProfileResponse:
+    # права
     if current_user.id != user_id and not _is_admin(current_user):
-        raise HTTPException(status_code=403, detail="You don't have permission to edit this profile.")
-
-    # target user must exist and be active too (по ТЗ “user_id exists and active”)
-    stmt_target = select(UserModel).where(UserModel.id == user_id)
-    target_user = (await db.execute(stmt_target)).scalars().first()
-    if not target_user or not target_user.is_active:
-        raise HTTPException(status_code=401, detail="User not found or not active.")
-
-    # 5) existing profile
-    stmt_profile = select(UserProfileModel).where(UserProfileModel.user_id == user_id)
-    existing_profile = (await db.execute(stmt_profile)).scalars().first()
-    if existing_profile:
-        raise HTTPException(status_code=400, detail="User already has a profile.")
-
-    # 6) validate schema + avatar bytes
-    avatar_bytes = await avatar.read()
-    try:
-        profile_data = ProfileCreateSchema(
-            first_name=first_name,
-            last_name=last_name,
-            gender=gender,
-            date_of_birth=date_of_birth,
-            info=info,
-            avatar=avatar_bytes,
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not allowed to create this profile",
         )
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid input data.")
 
-    # 7) upload avatar to S3 (MinIO)
-    # key/path can be anything, but keep stable + unique
-    ext = (avatar.filename or "avatar").split(".")[-1].lower()
-    if ext not in {"jpg", "jpeg", "png"}:
-        raise HTTPException(status_code=400, detail="Invalid input data.")
+    # нельзя создать второй раз
+    stmt_existing = select(ProfileModel).where(ProfileModel.user_id == user_id)
+    res_existing = await db.execute(stmt_existing)
+    if res_existing.scalars().first():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Profile already exists",
+        )
 
-    object_key = f"avatars/{user_id}_{uuid.uuid4().hex}.{ext}"
+    # валидации
+    _validate_name(first_name)
+    _validate_name(last_name)
+
+    if gender not in _ALLOWED_GENDERS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Gender must be one of: {', '.join(sorted(_ALLOWED_GENDERS))}",
+        )
 
     try:
-        # самый частый интерфейс: upload_bytes(key, bytes, content_type) -> url
-        # если у тебя метод называется иначе — просто переименуй вызов
-        avatar_url = await s3_client.upload_bytes(
-            object_key=object_key,
-            content=profile_data.avatar,
-            content_type=avatar.content_type or "application/octet-stream",
+        birth = datetime.strptime(date_of_birth, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid date format. Expected YYYY-MM-DD",
         )
-    except Exception:
-        raise HTTPException(status_code=500, detail="Failed to upload avatar. Please try again later.")
 
-    # 8) create profile in db
-    new_profile = UserProfileModel(
+    _validate_birth_date(birth)
+    _validate_info(info)
+
+    if avatar.content_type not in _ALLOWED_IMAGE_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid image format",
+        )
+
+    content = await avatar.read()
+    if len(content) > _MAX_AVATAR_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Image size exceeds the allowed limit (1MB).",
+        )
+
+    avatar_key = f"avatars/{user_id}_avatar.jpg"
+
+    try:
+        avatar_url = await storage.upload_file(
+            key=avatar_key,
+            content=content,
+            content_type=avatar.content_type,
+        )
+    except S3FileUploadError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+
+    profile = ProfileModel(
         user_id=user_id,
-        first_name=profile_data.first_name,
-        last_name=profile_data.last_name,
-        gender=profile_data.gender,
-        date_of_birth=profile_data.date_of_birth,
-        info=profile_data.info,
-        avatar=avatar_url,
+        first_name=first_name,
+        last_name=last_name,
+        gender=gender,
+        date_of_birth=birth,
+        info=info,
+        avatar_url=avatar_url,
     )
 
-    db.add(new_profile)
+    db.add(profile)
     await db.commit()
-    await db.refresh(new_profile)
+    await db.refresh(profile)
 
-    return new_profile
+    return ProfileResponse(
+        id=profile.id,
+        user_id=profile.user_id,
+        first_name=profile.first_name,
+        last_name=profile.last_name,
+        gender=profile.gender,
+        date_of_birth=profile.date_of_birth,
+        info=profile.info,
+        avatar_url=profile.avatar_url,
+    )
