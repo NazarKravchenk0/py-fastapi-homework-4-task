@@ -106,8 +106,9 @@ def _to_detail(movie: MovieModel) -> MovieDetailSchema:
         country=movie.country.code if movie.country else "",
         genres=[g.name for g in (movie.genres or [])],
         actors=[a.full_name for a in (movie.actors or [])],
-        languages=[l.name for l in (movie.languages or [])],
+        languages=[language.name for language in (movie.languages or [])],
     )
+
 
 
 @router.get("/", response_model=MovieListResponseSchema)
